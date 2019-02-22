@@ -42,6 +42,34 @@ named!(parse_seccomp_mode<SeccompMode>,
           | tag!("1") => { |_| SeccompMode::Strict   }
           | tag!("2") => { |_| SeccompMode::Filter   }));
 
+
+/// Speculation Store Bypass.
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub enum SsbMode {
+    Unknown,
+    NotVulnerable,
+    ThreadForceMitigated,
+    ThreadMitigated,
+    ThreadVulnerable,
+    GloballyMitigated,
+    Vulnerable,
+}
+
+impl Default for SsbMode {
+    fn default() -> SsbMode {
+        SsbMode::Unknown
+    }
+}
+
+named!(parse_ssb_mode<SsbMode>,
+       alt!(tag!("unknown") => { |_| SsbMode::Unknown }
+          | tag!("not vulnerable") => { |_| SsbMode::NotVulnerable }
+          | tag!("thread force mitigated") => { |_| SsbMode::ThreadForceMitigated }
+          | tag!("thread mitigated") => { |_| SsbMode::ThreadMitigated }
+          | tag!("thread vulnerable") => { |_| SsbMode::ThreadVulnerable }
+          | tag!("globally mitigated") => { |_| SsbMode::GloballyMitigated }
+          | tag!("vulnerable") => { |_| SsbMode::Vulnerable }));
+
 /// Process status information.
 ///
 /// See `man 5 proc` and `Linux/fs/proc/array.c`.
@@ -163,6 +191,8 @@ pub struct Status {
     /// This field is provided only if the kernel was built with the
     /// `CONFIG_SECCOMP` kernel configuration option enabled.
     pub seccomp: SeccompMode,
+    /// Speculation Store Bypass flaw mitigations
+    pub ssb: SsbMode,
     /// CPUs on which this process may run (since Linux 2.6.24, see cpuset(7)).
     ///
     /// The slice represents a bitmask in the same format as `BitVec`.
@@ -249,6 +279,7 @@ named!(parse_cap_ambient<u64>,  delimited!(tag!("CapAmb:\t"), parse_u64_hex, lin
 
 named!(parse_no_new_privs<bool>,       delimited!(tag!("NoNewPrivs:\t"),   parse_bit,           line_ending));
 named!(parse_seccomp<SeccompMode>,     delimited!(tag!("Seccomp:\t"),      parse_seccomp_mode,  line_ending));
+named!(parse_ssb<SsbMode>,             delimited!(tag!("Speculation_Store_Bypass:\t"), parse_ssb_mode, line_ending));
 named!(parse_cpus_allowed<Box<[u8]> >, delimited!(tag!("Cpus_allowed:\t"), parse_u32_mask_list, line_ending));
 named!(parse_mems_allowed<Box<[u8]> >, delimited!(tag!("Mems_allowed:\t"), parse_u32_mask_list, line_ending));
 
@@ -321,6 +352,7 @@ fn parse_status(i: &[u8]) -> IResult<&[u8], Status> {
 
                | parse_no_new_privs  => { |value| status.no_new_privs  = value }
                | parse_seccomp       => { |value| status.seccomp       = value }
+               | parse_ssb           => { |value| status.ssb           = value }
                | parse_cpus_allowed  => { |value| status.cpus_allowed  = value }
                | parse_cpus_allowed_list
                | parse_mems_allowed  => { |value| status.mems_allowed  = value }
@@ -356,7 +388,7 @@ pub fn status_task(process_id: pid_t, thread_id: pid_t) -> Result<Status> {
 #[cfg(test)]
 mod tests {
     use parsers::tests::unwrap;
-    use super::{SeccompMode, parse_status, status, status_self};
+    use super::{SeccompMode, SsbMode, parse_status, status, status_self};
     use pid::State;
 
     /// Test that the system status files can be parsed.
@@ -416,6 +448,7 @@ mod tests {
                             CapAmb:\t0000000000000000\n\
                             NoNewPrivs:\t0\n\
                             Seccomp:\t0\n\
+                            Speculation_Store_Bypass:\tthread vulnerable\n\
                             Cpus_allowed:\tffff\n\
                             Cpus_allowed_list:\t0-15\n\
                             Mems_allowed:\t00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001\n\
@@ -479,6 +512,7 @@ mod tests {
         assert_eq!(0x0000000000000000, status.cap_ambient);
         assert_eq!(false, status.no_new_privs);
         assert_eq!(SeccompMode::Disabled, status.seccomp);
+        assert_eq!(SsbMode::ThreadVulnerable, status.ssb);
         assert_eq!(&[0xff, 0xff, 0x00, 0x00], &*status.cpus_allowed);
         let mems_allowed: &mut [u8] = &mut [0; 64];
         mems_allowed[0] = 0x80;
